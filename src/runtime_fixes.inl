@@ -56,6 +56,36 @@ static void __cdecl BattleCursor(POINT* point) {
         point->y -= origin.y;
     }
 }
+static BOOL WINAPI SpriteCursor(POINT* point) {
+    // The software cursor renderer independently calls GetCursorPos. Its draw
+    // surface and clipping rectangle use client coordinates even in exclusive
+    // mode, so correcting battle input alone does not position this image.
+    if (!GetCursorPos(point)) return FALSE;
+    if (IsWindow(s_main)) {
+        const POINT origin = MainOrigin();
+        point->x -= origin.x;
+        point->y -= origin.y;
+    }
+    return TRUE;
+}
+static bool InstallSpriteCursor(BYTE* image) {
+    static const BYTE instructions[] = {
+        0x8d,0x44,0x24,0x1c,0x50, // lea eax,[esp+1c]; push eax
+        0xff,0x15,0x4c,0x12,0x4c,0x00, // call the renderer's GetCursorPos
+        0x8b,0x4c,0x24,0x1c,0x8b,0x56,0x1c,0x8b,0x46,0x20
+    };
+    if (memcmp(image + 0x4715, instructions, sizeof(instructions))) return false;
+    BYTE* call = image + 0x471a;
+    DWORD old;
+    if (!VirtualProtect(call, 6, PAGE_EXECUTE_READWRITE, &old)) return false;
+    const LONG relative = static_cast<LONG>(reinterpret_cast<BYTE*>(SpriteCursor) - (call + 5));
+    call[0] = 0xe8;
+    memcpy(call + 1, &relative, sizeof(relative));
+    call[5] = 0x90;
+    FlushInstructionCache(GetCurrentProcess(), call, 6);
+    DWORD unused; VirtualProtect(call, 6, old, &unused);
+    return true;
+}
 static bool InstallBattleCursor(BYTE* image) {
     // Match both the single battle call and its coordinate helper. No global
     // USER32 hook: menus, popups and normal Windows cursor APIs stay native.
@@ -358,8 +388,10 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
     WindowBehavior::Configure(windowed,
         GetPrivateProfileIntW(L"Compatibility", L"FixWindowMove", 1, ini) != 0,
         GetPrivateProfileIntW(L"Compatibility", L"FixAltF4", 1, ini) != 0);
-    if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixBattleMouse", 1, ini))
+    if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixBattleMouse", 1, ini)) {
         InstallBattleCursor(image);
+        InstallSpriteCursor(image);
+    }
     if (s_positionFix) {
         s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
         s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
@@ -382,5 +414,5 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         } else s_tracks = 0;
     }
     ReplaceSlot(image, 0xc1350, reinterpret_cast<FARPROC>(FixedMci), reinterpret_cast<FARPROC*>(&s_mci), GetModuleHandleW(L"winmm.dll"));
-    Log("WSC1 runtime fixes v1.0.2 enabled; audio tracks=%u", s_tracks);
+    Log("WSC1 runtime fixes v1.0.3 enabled; audio tracks=%u", s_tracks);
 }

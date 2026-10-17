@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 
 HERE = Path(__file__).resolve().parent
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 BACKEND_ARCHIVE_SHA256 = "3894368ebce69f348d08e189c2f0818c49aa3b18ad01e06348743bf6a29af97a"
 BACKEND_DLL_SHA256 = "ec42e51cbb4408518d6348706557b18ef50a87485c8bfa1839c895123fa3295f"
 SOURCE_FILES = (

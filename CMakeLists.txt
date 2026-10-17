@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(wsc1_win11_compat VERSION 1.0.2 LANGUAGES CXX)
+project(wsc1_win11_compat VERSION 1.0.3 LANGUAGES CXX)
 if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
   message(FATAL_ERROR "Use MSVC and -A Win32; the game and backend are x86")
 endif()

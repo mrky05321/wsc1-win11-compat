@@ -38,7 +38,7 @@ static BOOL CALLBACK Init(PINIT_ONCE, PVOID, PVOID*) {
     WCHAR ini[32768], backend[32768], selected[32];
     if (swprintf_s(ini, L"%swsc1-compat.ini", g_folder) < 0) return FALSE;
     GetPrivateProfileStringW(L"Compatibility", L"Backend", L"dxwrapper", selected, ARRAYSIZE(selected), ini);
-    Log("WSC1 DirectDraw proxy v1.0.2 x86");
+    Log("WSC1 DirectDraw proxy v1.0.3 x86");
     WCHAR image[32768];
     if (GetModuleFileNameW(nullptr, image, ARRAYSIZE(image))) LogPath("process", image);
     if (_wcsicmp(selected, L"system") == 0) {
@@ -137,7 +137,7 @@ extern "C" HRESULT WINAPI ProxyDirectDrawCreateEx(GUID* guid, LPVOID* output, RE
     return hr;
 }
 
-extern "C" DWORD WINAPI CompatVersion() { return 0x00010002; }
+extern "C" DWORD WINAPI CompatVersion() { return 0x00010003; }
 extern "C" DWORD WINAPI CompatStatus() { return g_status; }
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
