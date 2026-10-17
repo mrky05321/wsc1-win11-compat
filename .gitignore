@@ -1,6 +1,7 @@
 /build/
 /dist/
 /artifacts/
+/downloads/
 /.cache/
 /.vs/
 __pycache__/

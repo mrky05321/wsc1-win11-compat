@@ -1,1 +1,0 @@
-a7de612b8ce16b4a7e6f7b48d2980cbbf295c2aa220c09cd04eda9ea336ad37e  wsc1-win11-compat-v1.0.0.zip

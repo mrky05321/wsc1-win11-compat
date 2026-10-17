@@ -6,7 +6,7 @@ PC版初代『鋼鉄の咆哮』向けの非公式互換DLLです。描画変換
 
 ## 導入
 
-1. [配布ZIP v1.0.0](downloads/v1.0.0/wsc1-win11-compat-v1.0.0.zip) をダウンロードして展開します。SHA-256は同じフォルダーの `SHA256SUMS.txt` で確認できます。
+1. [配布ZIP v1.0.0](https://github.com/mrky05321/wsc1-win11-compat/releases/download/v1.0.0/wsc1-win11-compat-v1.0.0.zip) をダウンロードして展開します。SHA-256はGitHub Releaseの説明で確認できます。
 2. `ddraw.dll`、`dxwrapper.dll`、`dxwrapper.ini` の**3ファイル**を `BCS.exe` と同じフォルダーへコピーします。
 3. いつもどおり `BCS.exe` を起動します。初期設定は枠付きウィンドウです。
 
@@ -80,13 +80,7 @@ backendは[dxwrapper公式](https://github.com/elishacloud/dxwrapper)のv1.8.860
 
 ## GitHubへの配置
 
-このフォルダーがリポジトリのルートです。ゲームや解析データを含む親フォルダーをアップロードしないでください。
-
-1. このフォルダーのソースをGitHubリポジトリへpushします。
-2. Releasesでタグ `v1.0.0` を作成します。
-3. `artifacts/wsc1-win11-compat-v1.0.0.zip` と `artifacts/SHA256SUMS.txt` を添付します。利用者にはこのZIPを案内します。
-
-ソースZIPはバックアップ・手動アップロード用です。GitHubにソースをpush済みならReleaseへの添付は任意です。`artifacts/`、ビルド生成物やbackend DLLはGit管理対象外です。
+ソースコードはこのリポジトリで管理し、コンパイル済みの配布ZIPはGitHub Releasesに添付します。ゲームや解析データを含む親フォルダーはアップロードしません。`artifacts/`、`downloads/`、ビルド生成物やbackend DLLはGit管理対象外です。
 
 ## ライセンス
 
