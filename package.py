@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 
 HERE = Path(__file__).resolve().parent
-VERSION = "0.3.2"
+VERSION = "1.0.0"
 BACKEND_ARCHIVE_SHA256 = "3894368ebce69f348d08e189c2f0818c49aa3b18ad01e06348743bf6a29af97a"
 BACKEND_DLL_SHA256 = "ec42e51cbb4408518d6348706557b18ef50a87485c8bfa1839c895123fa3295f"
 SOURCE_FILES = (
@@ -83,7 +83,7 @@ def main():
     (artifacts / "SHA256SUMS.txt").write_text("".join(
         digest(p.read_bytes()) + "  " + p.name + "\n" for p in (runtime_zip, source_zip)), encoding="ascii")
     audit = {
-        "package_version": VERSION, "proxy_version": "0.3.2",
+        "package_version": VERSION, "proxy_version": "1.0.0",
         "runtime_file_count": len(members), "install_file_count": 3,
         "runtime_files": {n: digest(b) for n, b in members.items()},
         "source_files": list(SOURCE_FILES),
