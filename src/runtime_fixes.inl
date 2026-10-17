@@ -1,12 +1,13 @@
 // Included after the proxy logger. Only the identified WSC1 image is hooked.
 #include <mmsystem.h>
 #include <algorithm>
+#include "window_behavior.inl"
 
 static HWND s_main;
 struct PopupAnchor { HWND window; int x, y; WNDPROC previous; bool manual; };
 static PopupAnchor s_popups[64] = {};
 static bool s_adjusting;
-static HHOOK s_cbt, s_return;
+static HHOOK s_cbt, s_return, s_messages;
 static decltype(&SetWindowPos) s_position = SetWindowPos;
 static decltype(&mciSendCommandA) s_mci = mciSendCommandA;
 static bool s_positionFix;
@@ -72,7 +73,7 @@ static LRESULT CALLBACK WindowCreated(int code, WPARAM wp, LPARAM lp) {
         // Real child controls already use client coordinates. Translate only small
         // top-level game popups created inside the original 640x480 canvas.
         WCHAR cls[128] = {}; GetClassNameW(w, cls, ARRAYSIZE(cls));
-        if (s_main && !(c->style & WS_CHILD) && (c->style & WS_POPUP) &&
+        if (s_positionFix && s_main && !(c->style & WS_CHILD) && (c->style & WS_POPUP) &&
             c->x != CW_USEDEFAULT && c->y != CW_USEDEFAULT && c->cx > 0 && c->cy > 0 &&
             c->cx <= 640 && c->cy <= 480 &&
             wcscmp(cls, L"#32768") && wcscmp(cls, L"tooltips_class32") &&
@@ -121,6 +122,15 @@ static LRESULT CALLBACK WindowReturned(int code, WPARAM wp, LPARAM lp) {
         }
     }
     return CallNextHookEx(s_return, code, wp, lp);
+}
+
+static LRESULT CALLBACK WindowMessage(int code, WPARAM wp, LPARAM lp) {
+    if (code >= 0 && wp == PM_REMOVE) {
+        MainOrigin();
+        if (WindowBehavior::Attach(s_main))
+            WindowBehavior::FilterMessage(*reinterpret_cast<MSG*>(lp));
+    }
+    return CallNextHookEx(s_messages, code, wp, lp);
 }
 
 static DWORD FramesToMs(DWORD frames) { return static_cast<DWORD>((static_cast<ULONGLONG>(frames) * 1000) / 75); }
@@ -305,11 +315,19 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         Log("Runtime fixes skipped: main image is not the identified WSC1 build"); return;
     }
     s_positionFix = GetPrivateProfileIntW(L"Compatibility", L"FixPopupCoordinates", 1, ini) != 0;
+    WCHAR backendIni[32768]; swprintf_s(backendIni, L"%sdxwrapper.ini", g_folder);
+    const bool windowed = GetPrivateProfileIntW(L"d3d9", L"EnableWindowMode", 0, backendIni) != 0 &&
+        GetPrivateProfileIntW(L"d3d9", L"FullscreenWindowMode", 0, backendIni) == 0;
+    WindowBehavior::Configure(windowed,
+        GetPrivateProfileIntW(L"Compatibility", L"FixWindowMove", 1, ini) != 0,
+        GetPrivateProfileIntW(L"Compatibility", L"FixAltF4", 1, ini) != 0);
     if (s_positionFix) {
         s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
         s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
         Log("Popup thread hooks CBT=%p return=%p", s_cbt, s_return);
     }
+    if (windowed)
+        s_messages = SetWindowsHookExW(WH_GETMESSAGE, WindowMessage, g_self, GetCurrentThreadId());
     WCHAR manifest[32768]; swprintf_s(manifest, L"%smusic\\cd-audio.ini", g_folder);
     swprintf_s(s_audioPath, L"%smusic\\cd-audio.wav", g_folder);
     if (GetPrivateProfileIntW(L"Compatibility", L"DigitalCDAudio", 1, ini) && GetFileAttributesW(s_audioPath) != INVALID_FILE_ATTRIBUTES) {
@@ -325,5 +343,5 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         } else s_tracks = 0;
     }
     ReplaceSlot(image, 0xc1350, reinterpret_cast<FARPROC>(FixedMci), reinterpret_cast<FARPROC*>(&s_mci), GetModuleHandleW(L"winmm.dll"));
-    Log("WSC1 runtime fixes v1.0.0 enabled; audio tracks=%u", s_tracks);
+    Log("WSC1 runtime fixes v1.0.1 enabled; audio tracks=%u", s_tracks);
 }
