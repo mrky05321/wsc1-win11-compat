@@ -42,6 +42,43 @@ static POINT MainOrigin() {
     }
     return p;
 }
+
+// Battle polls the cursor through 004060D0 rather than relying on WM_MOUSEMOVE.
+// In the game's exclusive mode that helper leaves desktop coordinates intact.
+// The graphics backend forces a window without changing that game mode flag.
+static void (__cdecl* s_battleCursor)(POINT*);
+static const BYTE* s_exclusive;
+static void __cdecl BattleCursor(POINT* point) {
+    s_battleCursor(point);
+    if (point && *s_exclusive && IsWindow(s_main)) {
+        const POINT origin = MainOrigin();
+        point->x -= origin.x;
+        point->y -= origin.y;
+    }
+}
+static bool InstallBattleCursor(BYTE* image) {
+    // Match both the single battle call and its coordinate helper. No global
+    // USER32 hook: menus, popups and normal Windows cursor APIs stay native.
+    static const BYTE helper[] = {
+        0x56,0x8b,0x74,0x24,0x08,0x56,0xff,0x15,0xbc,0x12,0x4c,0x00,
+        0xa0,0x64,0xb9,0x6a,0x00,0x84,0xc0,0x75,0x10,0xa1,0x7c,0xb7,
+        0x6a,0x00,0x56,0x8b,0x40,0x0c,0x50,0xff,0x15,0x30,0x12,0x4c,
+        0x00,0x5e,0xc3
+    };
+    BYTE* call = image + 0x8e1d6;
+    if (memcmp(image + 0x60d0, helper, sizeof(helper)) || call[0] != 0xe8 ||
+        call + 5 + *reinterpret_cast<const LONG*>(call + 1) != image + 0x60d0)
+        return false;
+    DWORD old;
+    if (!VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+    s_battleCursor = reinterpret_cast<decltype(s_battleCursor)>(image + 0x60d0);
+    s_exclusive = image + 0x2ab964;
+    const LONG relative = static_cast<LONG>(reinterpret_cast<BYTE*>(BattleCursor) - (call + 5));
+    memcpy(call + 1, &relative, sizeof(relative));
+    FlushInstructionCache(GetCurrentProcess(), call, 5);
+    DWORD unused; VirtualProtect(call, 5, old, &unused);
+    return true;
+}
 static PopupAnchor* Anchor(HWND w) {
     for (auto& a : s_popups) if (a.window == w) return &a;
     return nullptr;
@@ -321,6 +358,8 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
     WindowBehavior::Configure(windowed,
         GetPrivateProfileIntW(L"Compatibility", L"FixWindowMove", 1, ini) != 0,
         GetPrivateProfileIntW(L"Compatibility", L"FixAltF4", 1, ini) != 0);
+    if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixBattleMouse", 1, ini))
+        InstallBattleCursor(image);
     if (s_positionFix) {
         s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
         s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
@@ -343,5 +382,5 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         } else s_tracks = 0;
     }
     ReplaceSlot(image, 0xc1350, reinterpret_cast<FARPROC>(FixedMci), reinterpret_cast<FARPROC*>(&s_mci), GetModuleHandleW(L"winmm.dll"));
-    Log("WSC1 runtime fixes v1.0.1 enabled; audio tracks=%u", s_tracks);
+    Log("WSC1 runtime fixes v1.0.2 enabled; audio tracks=%u", s_tracks);
 }
