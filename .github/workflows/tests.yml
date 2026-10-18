@@ -1,0 +1,31 @@
+name: Windows x86 regression tests
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x86:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure x86 with native tests
+        run: cmake -S . -B build/test -A Win32 -DWSC1_BUILD_WINDOW_TESTS=ON
+      - name: Build
+        run: cmake --build build/test --config Release
+      - name: Run regression tests
+        run: ctest --test-dir build/test -C Release --output-on-failure
