@@ -50,6 +50,8 @@ static POINT MainOrigin() {
 // The graphics backend forces a window without changing that game mode flag.
 static void (__cdecl* s_battleCursor)(POINT*);
 static const BYTE* s_exclusive;
+static const BYTE* s_applicationSlot;
+static decltype(&GetCursorPos) s_getCursor = GetCursorPos;
 static void __cdecl BattleCursor(POINT* point) {
     s_battleCursor(point);
     if (point && *s_exclusive && IsWindow(s_main)) {
@@ -58,17 +60,41 @@ static void __cdecl BattleCursor(POINT* point) {
         point->y -= origin.y;
     }
 }
-static BOOL WINAPI SpriteCursor(POINT* point) {
+static bool IsBattleSprite(const BYTE* sprite) {
+    if (!sprite || !s_applicationSlot || !MemoryHooks::Accessible(s_applicationSlot, sizeof(void*))) return false;
+    const BYTE* application = nullptr;
+    memcpy(&application, s_applicationSlot, sizeof(application));
+    if (!application || !MemoryHooks::Accessible(application + 0x8c, sizeof(void*))) return false;
+    const BYTE* battle = nullptr;
+    memcpy(&battle, application + 0x8c, sizeof(battle));
+    if (!battle || !MemoryHooks::Accessible(battle + 0x10aa, sizeof(void*))) return false;
+    const BYTE* battleSprite = nullptr;
+    memcpy(&battleSprite, battle + 0x10aa, sizeof(battleSprite));
+    return sprite == battleSprite;
+}
+static BOOL WINAPI SpriteCursorForObject(POINT* point, const BYTE* sprite) {
     // The software cursor renderer independently calls GetCursorPos. Its draw
     // surface and clipping rectangle use client coordinates even in exclusive
     // mode, so correcting battle input alone does not position this image.
-    if (!GetCursorPos(point)) return FALSE;
-    if (IsWindow(s_main)) {
+    if (!s_getCursor(point)) return FALSE;
+    // This renderer also draws the design screen's part preview. Its placement
+    // and hotspot handling must keep their original desktop-coordinate path.
+    if (IsBattleSprite(sprite) && IsWindow(s_main)) {
         const POINT origin = MainOrigin();
         point->x -= origin.x;
         point->y -= origin.y;
     }
     return TRUE;
+}
+static __declspec(naked) BOOL WINAPI SpriteCursor(POINT*) {
+    // At the matched call site ESI is the renderer object. Preserve the native
+    // GetCursorPos ABI (one stdcall argument) while passing that object onward.
+    __asm {
+        push esi
+        push dword ptr [esp + 8]
+        call SpriteCursorForObject
+        ret 4
+    }
 }
 static bool InstallCursorPair(BYTE* image) {
     static const BYTE instructions[] = {
@@ -107,6 +133,7 @@ static bool InstallCursorPair(BYTE* image) {
     // Publish forwarding state before code can reach the replacement.
     s_battleCursor = reinterpret_cast<decltype(s_battleCursor)>(image + 0x60d0);
     s_exclusive = image + 0x2ab964;
+    s_applicationSlot = image + 0x2ab77c;
     return MemoryHooks::PatchPair(patches);
 }
 static PopupAnchor* Anchor(HWND w) {

@@ -226,10 +226,71 @@ static void WindowTests() {
     Check(!Anchor(popup), "popup destruction clears tracking and restores window procedure");
     DestroyWindow(popup); DestroyWindow(s_main); s_main = nullptr;
 }
+static BOOL WINAPI CursorFixture(POINT* point) {
+    if (!point) return FALSE;
+    point->x = 1114; point->y = 515;
+    return TRUE;
+}
+static void SpriteScopeTests() {
+    BYTE application[0x100] = {}, battle[0x1100] = {}, battleSprite[64] = {}, designSprite[64] = {};
+    const BYTE* applicationPointer = application;
+    const BYTE* battlePointer = battle;
+    const BYTE* spritePointer = battleSprite;
+    memcpy(application + 0x8c, &battlePointer, sizeof(battlePointer));
+    memcpy(battle + 0x10aa, &spritePointer, sizeof(spritePointer));
+    s_applicationSlot = reinterpret_cast<const BYTE*>(&applicationPointer);
+    s_getCursor = CursorFixture;
+    s_main = CreateWindowExW(0,L"STATIC",L"sprite scope fixture",WS_OVERLAPPEDWINDOW,
+        200,150,640,480,nullptr,nullptr,nullptr,nullptr);
+    Check(s_main != nullptr, "create sprite coordinate fixture");
+    POINT origin = MainOrigin(), point = {};
+    Check(SpriteCursorForObject(&point,designSprite) && point.x == 1114 && point.y == 515,
+        "design preview retains desktop coordinates with a battle object present");
+    Check(SpriteCursorForObject(&point,battleSprite) && point.x == 1114-origin.x && point.y == 515-origin.y,
+        "only battle cursor receives client-coordinate correction");
+    spritePointer = nullptr;
+    memcpy(battle + 0x10aa, &spritePointer, sizeof(spritePointer));
+    Check(SpriteCursorForObject(&point,designSprite) && point.x == 1114 && point.y == 515,
+        "design scene without a battle sprite retains native coordinates");
+    applicationPointer = nullptr;
+    Check(SpriteCursorForObject(&point,designSprite) && point.x == 1114 && point.y == 515,
+        "scene teardown does not apply a guessed coordinate correction");
+    Check(!SpriteCursorForObject(nullptr,designSprite), "native cursor failure is preserved");
+    // Exercise the real x86 bridge: ESI identifies this renderer; RET 4 must
+    // preserve the caller's stack and nonvolatile ESI register.
+    BOOL ok = FALSE;
+    const BYTE* fixture = designSprite;
+    __asm {
+        push esi
+        mov esi, fixture
+        lea eax, point
+        push eax
+        call SpriteCursor
+        mov ok, eax
+        pop esi
+    }
+    Check(ok && point.x == 1114 && point.y == 515, "x86 sprite bridge retains stdcall stack and design coordinates");
+    applicationPointer = application; spritePointer = battleSprite;
+    memcpy(battle + 0x10aa, &spritePointer, sizeof(spritePointer));
+    fixture = battleSprite;
+    __asm {
+        push esi
+        mov esi, fixture
+        lea eax, point
+        push eax
+        call SpriteCursor
+        mov ok, eax
+        pop esi
+    }
+    Check(ok && point.x == 1114-origin.x && point.y == 515-origin.y,
+        "x86 sprite bridge forwards the actual renderer identity for battle");
+    DestroyWindow(s_main); s_main = nullptr;
+    s_applicationSlot = nullptr; s_getCursor = GetCursorPos;
+}
 int main() {
     // Retain the full initializer in this translation unit for compile coverage.
     (void)&InstallRuntimeFixes;
-    MemoryTests(); MciTests(); WindowTests();
+    MemoryTests(); MciTests(); WindowTests(); SpriteScopeTests();
     std::printf("Runtime safety failures: %d\n", failures);
     return failures ? 1 : 0;
 }
