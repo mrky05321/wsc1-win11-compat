@@ -500,5 +500,5 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         }
     }
     ReplaceSlot(image, 0xc1350, reinterpret_cast<FARPROC>(FixedMci), reinterpret_cast<FARPROC*>(&s_mci), GetModuleHandleW(L"winmm.dll"));
-    Log("WSC1 runtime fixes v1.0.3 enabled; audio tracks=%u", s_tracks);
+    Log("WSC1 runtime fixes v1.0.4 enabled; audio tracks=%u", s_tracks);
 }

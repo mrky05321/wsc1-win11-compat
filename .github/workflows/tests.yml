@@ -6,12 +6,14 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'CMakeLists.txt'
+      - 'package.py'
       - '.github/workflows/tests.yml'
   pull_request:
     paths:
       - 'src/**'
       - 'tests/**'
       - 'CMakeLists.txt'
+      - 'package.py'
       - '.github/workflows/tests.yml'
   workflow_dispatch:
 
@@ -29,3 +31,5 @@ jobs:
         run: cmake --build build/test --config Release
       - name: Run regression tests
         run: ctest --test-dir build/test -C Release --output-on-failure
+      - name: Check source package completeness
+        run: python tests/package_test.py
