@@ -287,10 +287,85 @@ static void SpriteScopeTests() {
     DestroyWindow(s_main); s_main = nullptr;
     s_applicationSlot = nullptr; s_getCursor = GetCursorPos;
 }
+static POINT designDesktop;
+static BOOL WINAPI DesignCursorFixture(POINT* point) {
+    if (!point) return FALSE;
+    *point = designDesktop; return TRUE;
+}
+static bool PreviewRejects(const POINT& point) {
+    // The game's 0044E0F0 receiver rejects this domain and emits (0,0).
+    return point.x < 0 || point.x > 0x1400 || point.y < 30 || point.y >= 301;
+}
+static void DesignPreviewTests() {
+    ResetFaults();
+    s_getCursor = DesignCursorFixture;
+    s_main = CreateWindowExW(0,L"STATIC",L"design coordinate fixture",WS_OVERLAPPEDWINDOW,
+        639,285,642,507,nullptr,nullptr,nullptr,nullptr);
+    Check(s_main != nullptr, "create design coordinate fixture");
+    const POINT client = {475,204};
+    POINT origin = MainOrigin(), point = {};
+    designDesktop = {origin.x+client.x,origin.y+client.y};
+    Check(PreviewRejects(designDesktop), "baseline desktop coordinate sends preview to rejected (0,0) branch");
+    Check(DesignCursor(&point) && point.x==client.x && point.y==client.y && !PreviewRejects(point),
+        "arrow refresh keeps preview at the original client position");
+    Check(DesignCursor(&point) && point.x==client.x && point.y==client.y,
+        "repeated direction changes do not accumulate an offset");
+    SetWindowPos(s_main,nullptr,-500,-100,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    origin = MainOrigin(); designDesktop = {origin.x+client.x,origin.y+client.y};
+    Check(DesignCursor(&point) && point.x==client.x && point.y==client.y,
+        "moved window and negative screen coordinates retain preview position");
+    Check(!DesignCursor(nullptr), "design cursor preserves native API failure");
+
+    auto image = static_cast<BYTE*>(VirtualAlloc(nullptr,0x50000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+    Check(image != nullptr, "allocate isolated design patch fixture");
+    if (image) {
+        const BYTE binding[] = {0x8b,0x3d,0x10,0x12,0x4c,0x00};
+        const BYTE call[] = {0xff,0xd7}, command[] = {0x68,0xfa,0x07,0x00,0x00};
+        auto setup = [&]() {
+            DWORD unused; VirtualProtect(image,0x50000,PAGE_EXECUTE_READWRITE,&unused);
+            memcpy(image+0x4e925,binding,sizeof(binding));
+            memcpy(image+0x4e986,call,sizeof(call)); memcpy(image+0x4ea01,call,sizeof(call));
+            memcpy(image+0x4e995,command,sizeof(command)); memcpy(image+0x4ea10,command,sizeof(command));
+            // Tail-call the callback after executing the exact patched binding.
+            image[0x4e92b]=0xff; image[0x4e92c]=0xe7;
+            VirtualProtect(image,0x50000,PAGE_EXECUTE_READ,&unused); ResetFaults();
+        };
+        setup();
+        Check(InstallDesignPreview(image), "verified design-only binding is patched");
+        Check(image[0x4e925]==0xbf && image[0x4e92a]==0x90 &&
+            !memcmp(image+0x4e986,call,sizeof(call)) && !memcmp(image+0x4ea01,call,sizeof(call)),
+            "only EDI binding changes; left and right call instructions remain native");
+        BOOL ok = FALSE; void* entry = image+0x4e925;
+        __asm {
+            push edi
+            lea eax, point
+            push eax
+            call entry
+            mov ok, eax
+            pop edi
+        }
+        Check(ok && point.x==client.x && point.y==client.y,
+            "actual x86 patched binding calls stdcall conversion and preserves position");
+        MEMORY_BASIC_INFORMATION info = {}; VirtualQuery(image+0x4e925,&info,sizeof(info));
+        Check(info.Protect==PAGE_EXECUTE_READ, "design patch restores original page protection");
+        setup(); DWORD unused; VirtualProtect(image,0x50000,PAGE_EXECUTE_READWRITE,&unused);
+        image[0x4ea10]=0x90; VirtualProtect(image,0x50000,PAGE_EXECUTE_READ,&unused);
+        Check(!InstallDesignPreview(image) && !memcmp(image+0x4e925,binding,sizeof(binding)) && protectCalls==0,
+            "different right-key receiver rejects patch before any mutation");
+        setup(); failProtectMask=1u<<1;
+        Check(!InstallDesignPreview(image) && !memcmp(image+0x4e925,binding,sizeof(binding)),
+            "design protection failure leaves original binding");
+        setup(); failFlushMask=1u<<1;
+        Check(!InstallDesignPreview(image) && !memcmp(image+0x4e925,binding,sizeof(binding)),
+            "design cache-sync failure rolls back the binding");
+        VirtualFree(image,0,MEM_RELEASE);
+    }
+    DestroyWindow(s_main); s_main=nullptr; s_getCursor=GetCursorPos; ResetFaults();
+}
 int main() {
     // Retain the full initializer in this translation unit for compile coverage.
     (void)&InstallRuntimeFixes;
-    MemoryTests(); MciTests(); WindowTests(); SpriteScopeTests();
+    MemoryTests(); MciTests(); WindowTests(); SpriteScopeTests(); DesignPreviewTests();
     std::printf("Runtime safety failures: %d\n", failures);
     return failures ? 1 : 0;
 }

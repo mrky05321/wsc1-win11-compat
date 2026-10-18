@@ -85,9 +85,12 @@ DigitalCDAudio=1
 FixWindowMove=1
 FixAltF4=1
 FixBattleMouse=1
+FixDesignPreview=1
 ```
 
 補正を止める項目は `0` にします。`DigitalCDAudio=0` はWAV音源への切替を止めて元のCD音声経路を使います。`FixBattleMouse=0` はウィンドウモードの兵装クリック補正と専用カーソル画像補正の両方を止めます。診断ログを有効にする設定はありません。
+
+開発版の `FixDesignPreview=1` は、設計画面で左右キーによって向きを変更した後も配置中の兵装の追従位置を保持する補正です。配布済みv1.0.3には含まれません。
 
 ## ソースからビルド
 

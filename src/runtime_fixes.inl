@@ -77,8 +77,8 @@ static BOOL WINAPI SpriteCursorForObject(POINT* point, const BYTE* sprite) {
     // surface and clipping rectangle use client coordinates even in exclusive
     // mode, so correcting battle input alone does not position this image.
     if (!s_getCursor(point)) return FALSE;
-    // This renderer also draws the design screen's part preview. Its placement
-    // and hotspot handling must keep their original desktop-coordinate path.
+    // Other renderer objects retain their original desktop-coordinate path.
+    // Design placement refresh has a separate, scoped DesignCursor correction.
     if (IsBattleSprite(sprite) && IsWindow(s_main)) {
         const POINT origin = MainOrigin();
         point->x -= origin.x;
@@ -95,6 +95,36 @@ static __declspec(naked) BOOL WINAPI SpriteCursor(POINT*) {
         call SpriteCursorForObject
         ret 4
     }
+}
+static BOOL WINAPI DesignCursor(POINT* point) {
+    if (!s_getCursor(point)) return FALSE;
+    const POINT origin = MainOrigin();
+    if (IsWindow(s_main)) {
+        point->x -= origin.x;
+        point->y -= origin.y;
+    }
+    return TRUE;
+}
+static bool InstallDesignPreview(BYTE* image) {
+    // Only the left/right-key preview refresh uses this EDI binding. Its POINT
+    // is packed into command 0x7FA, whose receiver expects client coordinates.
+    // Global cursor APIs, mouse messages and stored part coordinates are untouched.
+    static const BYTE binding[] = {0x8b,0x3d,0x10,0x12,0x4c,0x00};
+    static const BYTE call[] = {0xff,0xd7};
+    static const BYTE command[] = {0x68,0xfa,0x07,0x00,0x00};
+    struct Match { DWORD rva; const BYTE* bytes; SIZE_T size; };
+    const Match matches[] = {{0x4e925,binding,sizeof(binding)},
+        {0x4e986,call,sizeof(call)},{0x4ea01,call,sizeof(call)},
+        {0x4e995,command,sizeof(command)},{0x4ea10,command,sizeof(command)}};
+    for (const auto& m : matches)
+        if (!MemoryHooks::Accessible(image + m.rva,m.size,true) || memcmp(image + m.rva,m.bytes,m.size)) return false;
+    MemoryHooks::CodePatch patches[1] = {};
+    auto& patch = patches[0]; patch.address = image + 0x4e925; patch.size = sizeof(binding);
+    memcpy(patch.before,binding,sizeof(binding));
+    patch.after[0] = 0xbf; // mov edi, immediate callback; nop
+    const DWORD callback = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(DesignCursor));
+    memcpy(patch.after + 1,&callback,sizeof(callback)); patch.after[5] = 0x90;
+    return MemoryHooks::PatchCode(patches);
 }
 static bool InstallCursorPair(BYTE* image) {
     static const BYTE instructions[] = {
@@ -440,6 +470,9 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         GetPrivateProfileIntW(L"Compatibility", L"FixAltF4", 1, ini) != 0);
     if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixBattleMouse", 1, ini)) {
         if (!InstallCursorPair(image)) MemoryHooks::status |= MemoryHooks::CursorSkipped;
+    }
+    if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixDesignPreview", 1, ini)) {
+        if (!InstallDesignPreview(image)) MemoryHooks::status |= MemoryHooks::DesignSkipped;
     }
     InstallWindowHooks(windowed);
     WCHAR manifest[32768]; swprintf_s(manifest, L"%smusic\\cd-audio.ini", g_folder);

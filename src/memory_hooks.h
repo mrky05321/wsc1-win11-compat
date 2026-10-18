@@ -7,7 +7,8 @@
 namespace MemoryHooks {
 static DWORD status;
 enum : DWORD { IatSkipped = 0x100, CursorSkipped = 0x200,
-    ProtectionFailure = 0x400, CacheFailure = 0x800, WindowHookFailure = 0x1000 };
+    ProtectionFailure = 0x400, CacheFailure = 0x800, WindowHookFailure = 0x1000,
+    DesignSkipped = 0x2000 };
 static decltype(&VirtualProtect) protect = VirtualProtect;
 static decltype(&FlushInstructionCache) flush = FlushInstructionCache;
 static decltype(&VirtualQuery) query = VirtualQuery;
@@ -61,8 +62,8 @@ inline bool Replace(FARPROC* slot, FARPROC replacement, FARPROC* original, HMODU
 }
 
 struct CodePatch { BYTE* address; SIZE_T size; BYTE before[6], after[6]; DWORD old; bool writable; };
-inline bool PatchPair(CodePatch (&patches)[2]) {
-    // Validate the entire pair before changing either site. Installation runs
+template<SIZE_T N> inline bool PatchCode(CodePatch (&patches)[N]) {
+    // Validate every site before changing any of them. Installation runs
     // once at first DirectDraw initialization, not at every cursor poll.
     for (auto& p : patches)
         if (!Accessible(p.address, p.size, true) || memcmp(p.address, p.before, p.size)) return false;
@@ -98,4 +99,5 @@ inline bool PatchPair(CodePatch (&patches)[2]) {
     }
     return false;
 }
+inline bool PatchPair(CodePatch (&patches)[2]) { return PatchCode(patches); }
 } // namespace MemoryHooks
