@@ -7,14 +7,18 @@ import tempfile
 import zipfile
 
 HERE = Path(__file__).resolve().parent
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 BACKEND_ARCHIVE_SHA256 = "3894368ebce69f348d08e189c2f0818c49aa3b18ad01e06348743bf6a29af97a"
 BACKEND_DLL_SHA256 = "ec42e51cbb4408518d6348706557b18ef50a87485c8bfa1839c895123fa3295f"
 SOURCE_FILES = (
-    ".gitignore", "CMakeLists.txt", "build.ps1", "package.py", "dxwrapper.ini",
+    ".gitignore", ".github/workflows/tests.yml", "CMakeLists.txt", "build.ps1", "package.py", "dxwrapper.ini",
     "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt",
     "src/proxy.cpp", "src/runtime_fixes.inl", "src/window_behavior.inl", "src/ddraw.def",
-    "tests/window_behavior.cpp",
+    "src/cd_manifest_validation.h", "src/memory_hooks.h",
+    "tests/window_behavior.cpp", "tests/cd_manifest.cpp", "tests/runtime_safety.cpp",
+    "tests/package_test.py", "tests/proxy_load.cpp",
+    "docs/DESIGN_CURSOR_FOLLOWUP_20261019.md", "docs/DESIGN_PREVIEW_FIX_20261019.md",
+    "docs/ISSUE_AUDIT_20261018.md", "docs/RELEASE_1.0.4.md",
     "tools/extract_cd_audio.py",
 )
 RUNTIME_NAMES = ("ddraw.dll", "dxwrapper.dll", "dxwrapper.ini", "README.txt")
