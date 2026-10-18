@@ -3,6 +3,7 @@
 #include <algorithm>
 #include "window_behavior.inl"
 #include "cd_manifest_validation.h"
+#include "memory_hooks.h"
 
 static HWND s_main;
 struct PopupAnchor { HWND window; int x, y; WNDPROC previous; bool manual; };
@@ -69,46 +70,44 @@ static BOOL WINAPI SpriteCursor(POINT* point) {
     }
     return TRUE;
 }
-static bool InstallSpriteCursor(BYTE* image) {
+static bool InstallCursorPair(BYTE* image) {
     static const BYTE instructions[] = {
         0x8d,0x44,0x24,0x1c,0x50, // lea eax,[esp+1c]; push eax
         0xff,0x15,0x4c,0x12,0x4c,0x00, // call the renderer's GetCursorPos
         0x8b,0x4c,0x24,0x1c,0x8b,0x56,0x1c,0x8b,0x46,0x20
     };
-    if (memcmp(image + 0x4715, instructions, sizeof(instructions))) return false;
-    BYTE* call = image + 0x471a;
-    DWORD old;
-    if (!VirtualProtect(call, 6, PAGE_EXECUTE_READWRITE, &old)) return false;
-    const LONG relative = static_cast<LONG>(reinterpret_cast<BYTE*>(SpriteCursor) - (call + 5));
-    call[0] = 0xe8;
-    memcpy(call + 1, &relative, sizeof(relative));
-    call[5] = 0x90;
-    FlushInstructionCache(GetCurrentProcess(), call, 6);
-    DWORD unused; VirtualProtect(call, 6, old, &unused);
-    return true;
-}
-static bool InstallBattleCursor(BYTE* image) {
-    // Match both the single battle call and its coordinate helper. No global
-    // USER32 hook: menus, popups and normal Windows cursor APIs stay native.
     static const BYTE helper[] = {
         0x56,0x8b,0x74,0x24,0x08,0x56,0xff,0x15,0xbc,0x12,0x4c,0x00,
         0xa0,0x64,0xb9,0x6a,0x00,0x84,0xc0,0x75,0x10,0xa1,0x7c,0xb7,
         0x6a,0x00,0x56,0x8b,0x40,0x0c,0x50,0xff,0x15,0x30,0x12,0x4c,
         0x00,0x5e,0xc3
     };
-    BYTE* call = image + 0x8e1d6;
-    if (memcmp(image + 0x60d0, helper, sizeof(helper)) || call[0] != 0xe8 ||
-        call + 5 + *reinterpret_cast<const LONG*>(call + 1) != image + 0x60d0)
+    if (!MemoryHooks::Accessible(image + 0x4715, sizeof(instructions), true) ||
+        !MemoryHooks::Accessible(image + 0x60d0, sizeof(helper), true) ||
+        !MemoryHooks::Accessible(image + 0x8e1d6, 5, true) ||
+        memcmp(image + 0x4715, instructions, sizeof(instructions)) ||
+        memcmp(image + 0x60d0, helper, sizeof(helper))) return false;
+    BYTE* battle = image + 0x8e1d6;
+    if (battle[0] != 0xe8 || battle + 5 + *reinterpret_cast<const LONG*>(battle + 1) != image + 0x60d0)
         return false;
-    DWORD old;
-    if (!VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+    MemoryHooks::CodePatch patches[2] = {};
+    patches[0].address = battle; patches[0].size = 5;
+    patches[1].address = image + 0x471a; patches[1].size = 6;
+    // Expected bytes come from the identified build, never a fresh snapshot
+    // which could silently adopt a competing writer after signature validation.
+    patches[0].before[0] = 0xe8;
+    const DWORD originalRel = 0x60d0u - (0x8e1d6u + 5);
+    memcpy(patches[0].before + 1, &originalRel, 4);
+    memcpy(patches[1].before, instructions + 5, 6);
+    for (auto& p : patches) p.after[0] = 0xe8;
+    const DWORD battleRel = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(BattleCursor) - reinterpret_cast<ULONG_PTR>(battle + 5));
+    const DWORD spriteRel = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(SpriteCursor) - reinterpret_cast<ULONG_PTR>(image + 0x471f));
+    memcpy(patches[0].after + 1, &battleRel, 4);
+    memcpy(patches[1].after + 1, &spriteRel, 4); patches[1].after[5] = 0x90;
+    // Publish forwarding state before code can reach the replacement.
     s_battleCursor = reinterpret_cast<decltype(s_battleCursor)>(image + 0x60d0);
     s_exclusive = image + 0x2ab964;
-    const LONG relative = static_cast<LONG>(reinterpret_cast<BYTE*>(BattleCursor) - (call + 5));
-    memcpy(call + 1, &relative, sizeof(relative));
-    FlushInstructionCache(GetCurrentProcess(), call, 5);
-    DWORD unused; VirtualProtect(call, 5, old, &unused);
-    return true;
+    return MemoryHooks::PatchPair(patches);
 }
 static PopupAnchor* Anchor(HWND w) {
     for (auto& a : s_popups) if (a.window == w) return &a;
@@ -177,7 +176,7 @@ static LRESULT CALLBACK WindowCreated(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(s_cbt, code, wp, lp);
 }
 static LRESULT CALLBACK WindowReturned(int code, WPARAM wp, LPARAM lp) {
-    if (code >= 0 && !s_adjusting) {
+    if (code >= 0 && s_positionFix && !s_adjusting) {
         auto c = reinterpret_cast<CWPRETSTRUCT*>(lp);
         if (c->message == WM_WINDOWPOSCHANGED) {
             if (c->hwnd == s_main && !IsIconic(s_main)) {
@@ -231,6 +230,7 @@ static bool DecodeCdTime(DWORD value, DWORD& frame) {
         if (t < 1 || t > s_tracks ||
             MCI_TMSF_SECOND(value) >= 60 || MCI_TMSF_FRAME(value) >= 75) return false;
         frame = s_track[t] + MCI_TMSF_MINUTE(value) * 4500 + MCI_TMSF_SECOND(value) * 75 + MCI_TMSF_FRAME(value);
+        if (frame > (t == s_tracks ? s_discEnd : s_track[t + 1])) return false;
     } else {
         if (MCI_MSF_SECOND(value) >= 60 || MCI_MSF_FRAME(value) >= 75) return false;
         frame = MCI_MSF_MINUTE(value) * 4500 + MCI_MSF_SECOND(value) * 75 + MCI_MSF_FRAME(value);
@@ -245,7 +245,7 @@ static bool IsCdOpen(DWORD_PTR flags, DWORD_PTR args) {
 }
 static MCIERROR WINAPI FixedMci(MCIDEVICEID id, UINT msg, DWORD_PTR flags, DWORD_PTR args) {
     bool cd = msg == MCI_OPEN && IsCdOpen(flags, args);
-    if (cd && s_tracks && !s_audioDevice) {
+    if (cd && s_tracks && !s_audioDevice && ValidCdWave(s_audioPath, s_discEnd - s_audioStart)) {
         MCI_OPEN_PARMSW p = {};
         p.lpstrDeviceType = reinterpret_cast<LPCWSTR>(MCI_DEVTYPE_WAVEFORM_AUDIO);
         p.lpstrElementName = s_audioPath;
@@ -322,7 +322,9 @@ static MCIERROR WINAPI FixedMci(MCIDEVICEID id, UINT msg, DWORD_PTR flags, DWORD
                 MCI_STATUS_PARMS q = {}; q.dwItem = MCI_STATUS_POSITION;
                 err = s_mci(id, MCI_STATUS, MCI_STATUS_ITEM | MCI_WAIT, reinterpret_cast<DWORD_PTR>(&q));
                 if (err) return err;
-                DWORD frame = s_audioStart + static_cast<DWORD>((static_cast<ULONGLONG>(q.dwReturn) * 75 + 500) / 1000);
+                ULONGLONG offset = (static_cast<ULONGLONG>(q.dwReturn) * 75 + 500) / 1000;
+                if (offset > s_discEnd - s_audioStart) return MCIERR_OUTOFRANGE;
+                DWORD frame = s_audioStart + static_cast<DWORD>(offset);
                 p->dwReturn = p->dwItem == MCI_STATUS_CURRENT_TRACK ? TrackAt(frame) : EncodeCdTime(frame); return 0;
             }
             default: return s_mci(id, msg, flags, args);
@@ -366,22 +368,31 @@ static MCIERROR WINAPI FixedMci(MCIDEVICEID id, UINT msg, DWORD_PTR flags, DWORD
 }
 
 static bool ReplaceSlot(BYTE* image, DWORD rva, FARPROC replacement, FARPROC* original, HMODULE expected) {
-    auto slot = reinterpret_cast<FARPROC*>(image + rva);
-    MEMORY_BASIC_INFORMATION info = {};
-    if (!VirtualQuery(reinterpret_cast<void*>(*slot), &info, sizeof(info)) || info.State != MEM_COMMIT ||
-        !(info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
-        Log("IAT not resolved at RVA=0x%lx; hook skipped", rva); return false;
+    const bool success = MemoryHooks::Replace(reinterpret_cast<FARPROC*>(image + rva), replacement, original, expected);
+    if (!success) MemoryHooks::status |= MemoryHooks::IatSkipped;
+    return success;
+}
+
+// Keep any failed-to-remove hook handle so the remaining callback can still
+// chain. All popup callbacks are inert when the pair is unavailable.
+static void InstallWindowHooks(bool windowed) {
+    if (s_positionFix) {
+        s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
+        s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
+        if (!s_cbt || !s_return) {
+            s_positionFix = false;
+            MemoryHooks::status |= MemoryHooks::WindowHookFailure;
+            if (s_cbt && UnhookWindowsHookEx(s_cbt)) s_cbt = nullptr;
+            if (s_return && UnhookWindowsHookEx(s_return)) s_return = nullptr;
+        }
     }
-    // Verify the slot resolves to the declared API. Do not overwrite encrypted data,
-    // or a pointer installed by an unknown third party.
-    if (*slot != *original && info.AllocationBase != expected) {
-        Log("IAT binding differs at RVA=0x%lx pointer=%p; hook skipped", rva, *slot); return false;
+    if (windowed) {
+        s_messages = SetWindowsHookExW(WH_GETMESSAGE, WindowMessage, g_self, GetCurrentThreadId());
+        if (!s_messages) {
+            MemoryHooks::status |= MemoryHooks::WindowHookFailure;
+            WindowBehavior::Configure(false, false, false);
+        }
     }
-    DWORD old;
-    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) return false;
-    *original = *slot; InterlockedExchangePointer(reinterpret_cast<PVOID volatile*>(slot), reinterpret_cast<PVOID>(replacement));
-    DWORD unused; VirtualProtect(slot, sizeof(*slot), old, &unused);
-    Log("IAT compatibility hook installed RVA=0x%lx", rva); return true;
 }
 static void InstallRuntimeFixes(const WCHAR* ini) {
     BYTE* image = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
@@ -401,43 +412,27 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
         GetPrivateProfileIntW(L"Compatibility", L"FixWindowMove", 1, ini) != 0,
         GetPrivateProfileIntW(L"Compatibility", L"FixAltF4", 1, ini) != 0);
     if (windowed && GetPrivateProfileIntW(L"Compatibility", L"FixBattleMouse", 1, ini)) {
-        InstallBattleCursor(image);
-        InstallSpriteCursor(image);
+        if (!InstallCursorPair(image)) MemoryHooks::status |= MemoryHooks::CursorSkipped;
     }
-    if (s_positionFix) {
-        s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
-        s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
-        if (!s_cbt || !s_return) {
-            Log("Popup hooks unavailable CBT=%p return=%p error=%lu; disabling popup translation",
-                s_cbt, s_return, GetLastError());
-            if (s_cbt) { UnhookWindowsHookEx(s_cbt); s_cbt = nullptr; }
-            if (s_return) { UnhookWindowsHookEx(s_return); s_return = nullptr; }
-            s_positionFix = false;
-        }
-    }
-    if (windowed) {
-        s_messages = SetWindowsHookExW(WH_GETMESSAGE, WindowMessage, g_self, GetCurrentThreadId());
-        if (!s_messages) {
-            Log("Window message hook unavailable error=%lu; disabling window behavior", GetLastError());
-            WindowBehavior::Configure(false, false, false);
-        }
-    }
+    InstallWindowHooks(windowed);
     WCHAR manifest[32768]; swprintf_s(manifest, L"%smusic\\cd-audio.ini", g_folder);
     swprintf_s(s_audioPath, L"%smusic\\cd-audio.wav", g_folder);
     const DWORD wavAttributes = GetFileAttributesW(s_audioPath);
     if (GetPrivateProfileIntW(L"Compatibility", L"DigitalCDAudio", 1, ini) &&
         wavAttributes != INVALID_FILE_ATTRIBUTES && !(wavAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        const unsigned tracks = GetPrivateProfileIntW(L"Disc", L"Tracks", 0, manifest);
-        const DWORD discEnd = GetPrivateProfileIntW(L"Disc", L"EndFrame", 0, manifest);
-        const DWORD audioStart = GetPrivateProfileIntW(L"Disc", L"AudioStartFrame", 0, manifest);
+        DWORD tracks = 0, discEnd = 0, audioStart = 0;
+        bool parsed = ReadManifestNumber(L"Disc", L"Tracks", manifest, tracks) &&
+            ReadManifestNumber(L"Disc", L"EndFrame", manifest, discEnd) &&
+            ReadManifestNumber(L"Disc", L"AudioStartFrame", manifest, audioStart);
         DWORD positions[ARRAYSIZE(s_track)] = {};
         if (tracks >= 2 && tracks < ARRAYSIZE(positions)) {
             for (unsigned i = 1; i <= tracks; ++i) {
                 WCHAR key[16]; swprintf_s(key, L"%u", i);
-                positions[i] = GetPrivateProfileIntW(L"Tracks", key, 0, manifest);
+                if (!ReadManifestNumber(L"Tracks", key, manifest, positions[i])) parsed = false;
             }
         }
-        if (ValidCdManifest(tracks, discEnd, audioStart, positions, ARRAYSIZE(positions))) {
+        if (parsed && ValidCdManifest(tracks, discEnd, audioStart, positions, ARRAYSIZE(positions)) &&
+            ValidCdWave(s_audioPath, discEnd - audioStart)) {
             s_tracks = tracks; s_discEnd = discEnd; s_audioStart = audioStart;
             memcpy(s_track, positions, sizeof(s_track));
         } else {

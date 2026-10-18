@@ -138,7 +138,7 @@ extern "C" HRESULT WINAPI ProxyDirectDrawCreateEx(GUID* guid, LPVOID* output, RE
 }
 
 extern "C" DWORD WINAPI CompatVersion() { return 0x00010003; }
-extern "C" DWORD WINAPI CompatStatus() { return g_status; }
+extern "C" DWORD WINAPI CompatStatus() { return g_status | MemoryHooks::status; }
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) g_self = module;

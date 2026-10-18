@@ -103,6 +103,8 @@ Windows、Visual Studio 2022 C++ Build Tools、Windows SDK、CMake、Python 3.8�
 
 backendは[dxwrapper公式リポジトリ](https://github.com/elishacloud/dxwrapper)のv1.8.8600.25です。受け付けるarchiveのSHA-256は `3894368ebce69f348d08e189c2f0818c49aa3b18ad01e06348743bf6a29af97a` です。パッケージ作成はゲームを起動しません。
 
+開発中の堅牢性修正、回帰テストの実行方法、未検証項目は [イシュー調査記録](docs/ISSUE_AUDIT_20261018.md) を参照してください。配布済みv1.0.3と開発中の変更は別です。
+
 ## ライセンス
 
 専用ソースは [MIT License](LICENSE) です。dxwrapperは別ライセンスで配布しています。上流の通知は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。本プロジェクトはゲーム発売元と無関係の非公式ツールです。
