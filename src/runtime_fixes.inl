@@ -2,6 +2,7 @@
 #include <mmsystem.h>
 #include <algorithm>
 #include "window_behavior.inl"
+#include "cd_manifest_validation.h"
 
 static HWND s_main;
 struct PopupAnchor { HWND window; int x, y; WNDPROC previous; bool manual; };
@@ -152,6 +153,12 @@ static LRESULT CALLBACK WindowCreated(int code, WPARAM wp, LPARAM lp) {
                     c->x >= p.x && c->x < p.x + 640 && c->y >= p.y && c->y < p.y + 480;
                 a = {w, absolute ? c->x - p.x : c->x, absolute ? c->y - p.y : c->y, nullptr, false};
                 a.previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(w, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PopupProcedure)));
+                if (!a.previous) {
+                    // Do not alter the popup position or owner if subclassing failed.
+                    a = {};
+                    Log("Popup subclass installation failed hwnd=%p error=%lu", w, GetLastError());
+                    break;
+                }
                 if (!absolute) { c->x += p.x; c->y += p.y; }
                 c->hwndParent = s_main; // owner; never turn the popup into a child
                 Log("Popup tracked hwnd=%p class=%ls logical=%d,%d screen=%d,%d proc=%p",
@@ -221,9 +228,13 @@ static bool DecodeCdTime(DWORD value, DWORD& frame) {
     }
     if (s_timeFormat == MCI_FORMAT_TMSF) {
         unsigned t = MCI_TMSF_TRACK(value);
-        if (t < 1 || t > s_tracks) return false;
+        if (t < 1 || t > s_tracks ||
+            MCI_TMSF_SECOND(value) >= 60 || MCI_TMSF_FRAME(value) >= 75) return false;
         frame = s_track[t] + MCI_TMSF_MINUTE(value) * 4500 + MCI_TMSF_SECOND(value) * 75 + MCI_TMSF_FRAME(value);
-    } else frame = MCI_MSF_MINUTE(value) * 4500 + MCI_MSF_SECOND(value) * 75 + MCI_MSF_FRAME(value);
+    } else {
+        if (MCI_MSF_SECOND(value) >= 60 || MCI_MSF_FRAME(value) >= 75) return false;
+        frame = MCI_MSF_MINUTE(value) * 4500 + MCI_MSF_SECOND(value) * 75 + MCI_MSF_FRAME(value);
+    }
     return true;
 }
 static bool IsCdOpen(DWORD_PTR flags, DWORD_PTR args) {
@@ -260,6 +271,7 @@ static MCIERROR WINAPI FixedMci(MCIDEVICEID id, UINT msg, DWORD_PTR flags, DWORD
             err = s_mci(id, msg, flags, args); if (!err) s_audioDevice = 0; return err;
         case MCI_SET:
             if (flags & MCI_SET_TIME_FORMAT) {
+                if (!args) return MCIERR_NULL_PARAMETER_BLOCK;
                 DWORD f = reinterpret_cast<MCI_SET_PARMS*>(args)->dwTimeFormat;
                 if (f != MCI_FORMAT_TMSF && f != MCI_FORMAT_MSF && f != MCI_FORMAT_MILLISECONDS) return MCIERR_BAD_TIME_FORMAT;
                 s_timeFormat = f;
@@ -395,23 +407,42 @@ static void InstallRuntimeFixes(const WCHAR* ini) {
     if (s_positionFix) {
         s_cbt = SetWindowsHookExW(WH_CBT, WindowCreated, g_self, GetCurrentThreadId());
         s_return = SetWindowsHookExW(WH_CALLWNDPROCRET, WindowReturned, g_self, GetCurrentThreadId());
-        Log("Popup thread hooks CBT=%p return=%p", s_cbt, s_return);
+        if (!s_cbt || !s_return) {
+            Log("Popup hooks unavailable CBT=%p return=%p error=%lu; disabling popup translation",
+                s_cbt, s_return, GetLastError());
+            if (s_cbt) { UnhookWindowsHookEx(s_cbt); s_cbt = nullptr; }
+            if (s_return) { UnhookWindowsHookEx(s_return); s_return = nullptr; }
+            s_positionFix = false;
+        }
     }
-    if (windowed)
+    if (windowed) {
         s_messages = SetWindowsHookExW(WH_GETMESSAGE, WindowMessage, g_self, GetCurrentThreadId());
+        if (!s_messages) {
+            Log("Window message hook unavailable error=%lu; disabling window behavior", GetLastError());
+            WindowBehavior::Configure(false, false, false);
+        }
+    }
     WCHAR manifest[32768]; swprintf_s(manifest, L"%smusic\\cd-audio.ini", g_folder);
     swprintf_s(s_audioPath, L"%smusic\\cd-audio.wav", g_folder);
-    if (GetPrivateProfileIntW(L"Compatibility", L"DigitalCDAudio", 1, ini) && GetFileAttributesW(s_audioPath) != INVALID_FILE_ATTRIBUTES) {
-        s_tracks = GetPrivateProfileIntW(L"Disc", L"Tracks", 0, manifest);
-        s_discEnd = GetPrivateProfileIntW(L"Disc", L"EndFrame", 0, manifest);
-        s_audioStart = GetPrivateProfileIntW(L"Disc", L"AudioStartFrame", 0, manifest);
-        if (s_tracks >= 2 && s_tracks < ARRAYSIZE(s_track) && s_discEnd > s_audioStart) {
-            for (unsigned i = 1; i <= s_tracks; ++i) {
+    const DWORD wavAttributes = GetFileAttributesW(s_audioPath);
+    if (GetPrivateProfileIntW(L"Compatibility", L"DigitalCDAudio", 1, ini) &&
+        wavAttributes != INVALID_FILE_ATTRIBUTES && !(wavAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        const unsigned tracks = GetPrivateProfileIntW(L"Disc", L"Tracks", 0, manifest);
+        const DWORD discEnd = GetPrivateProfileIntW(L"Disc", L"EndFrame", 0, manifest);
+        const DWORD audioStart = GetPrivateProfileIntW(L"Disc", L"AudioStartFrame", 0, manifest);
+        DWORD positions[ARRAYSIZE(s_track)] = {};
+        if (tracks >= 2 && tracks < ARRAYSIZE(positions)) {
+            for (unsigned i = 1; i <= tracks; ++i) {
                 WCHAR key[16]; swprintf_s(key, L"%u", i);
-                s_track[i] = GetPrivateProfileIntW(L"Tracks", key, 0, manifest);
-                if (i > 1 && s_track[i] <= s_track[i-1]) s_tracks = 0;
+                positions[i] = GetPrivateProfileIntW(L"Tracks", key, 0, manifest);
             }
-        } else s_tracks = 0;
+        }
+        if (ValidCdManifest(tracks, discEnd, audioStart, positions, ARRAYSIZE(positions))) {
+            s_tracks = tracks; s_discEnd = discEnd; s_audioStart = audioStart;
+            memcpy(s_track, positions, sizeof(s_track));
+        } else {
+            Log("Invalid CD audio timeline: ignoring PCM manifest and using native MCI");
+        }
     }
     ReplaceSlot(image, 0xc1350, reinterpret_cast<FARPROC>(FixedMci), reinterpret_cast<FARPROC*>(&s_mci), GetModuleHandleW(L"winmm.dll"));
     Log("WSC1 runtime fixes v1.0.3 enabled; audio tracks=%u", s_tracks);
